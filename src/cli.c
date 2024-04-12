@@ -35,22 +35,6 @@ typedef struct {
 // Array to hold registered daemons
 Daemon daemons[MAX_DAEMONS];
 
-// Function prototypes
-void sf_init(void);
-void sf_fini(void);
-void sf_register(char *daemon_name);
-void sf_unregister(char *daemon_name);
-void sf_start(char *daemon_name);
-void sf_active(char *daemon_name, pid_t pid);
-void sf_stop(char *daemon_name, pid_t pid);
-void sf_kill(char *daemon_name, pid_t pid);
-void sf_term(char *daemon_name, pid_t pid, int exit_status);
-void sf_crash(char *daemon_name, pid_t pid, int signal);
-void sf_reset(char *daemon_name);
-void sf_logrotate(char *daemon_name);
-void sf_error(char *reason);
-void sf_prompt(void);
-void sf_status(char *msg);
 
 // Function to find a free slot in the daemons array
 int find_free_slot() {
@@ -85,6 +69,51 @@ void help_command() {
     printf("stop (1 args) Stop a daemon\n");
     printf("logrotate (1 args) Rotate log files for a daemon\n");
 }
+
+// Function to handle the 'logrotate' command
+void logrotate_command(char *daemon_name) {
+    // Call the function to perform log rotation for the specified daemon
+    sf_logrotate(daemon_name);
+}
+
+// Function to execute the command
+void execute_command(char *command) {
+    // Parse command and execute corresponding action
+    char *token = strtok(command, " ");
+    if (token == NULL) {
+        printf("Unknown command: %s\n", command);
+        return;
+    }
+
+    if (strcmp(token, "help") == 0) {
+        // Help command implementation
+    } else if (strcmp(token, "quit") == 0) {
+        // Quit command implementation
+    } else if (strcmp(token, "register") == 0) {
+        // Register command implementation
+    } else if (strcmp(token, "unregister") == 0) {
+        // Unregister command implementation
+    } else if (strcmp(token, "status") == 0) {
+        // Status command implementation
+    } else if (strcmp(token, "status-all") == 0) {
+        // Status-all command implementation
+    } else if (strcmp(token, "start") == 0) {
+        // Start command implementation
+    } else if (strcmp(token, "stop") == 0) {
+        // Stop command implementation
+    } else if (strcmp(token, "logrotate") == 0) {
+        // Logrotate command implementation
+        char *daemon_name = strtok(NULL, " ");
+        if (daemon_name == NULL) {
+            printf("Invalid arguments for logrotate command\n");
+            return;
+        }
+        logrotate_command(daemon_name);
+    } else {
+        printf("Unknown command: %s\n", command);
+    }
+}
+
 
 // Function to handle the 'quit' command
 void quit_command() {
