@@ -4,6 +4,9 @@
 #include <stdbool.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <criterion/criterion.h>
+
+#include <criterion/logging.h>
 
 #include "legion.h"
 #include "event.h"

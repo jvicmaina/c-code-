@@ -1,9 +1,16 @@
-#ifndef LEGION_H
-#define LEGION_H
+/**
+ * === DO NOT MODIFY THIS FILE ===
+ * If you need some other prototypes or constants in a header, please put them
+ * in another header file.
+ *
+ * When we grade, we will be replacing this file with our own copy.
+ * You have been warned.
+ * === DO NOT MODIFY THIS FILE ===
+ */
 
+#include <stdlib.h>
 #include <stdio.h>
 #include <unistd.h>
-#include <sys/types.h>
 
 /* Directory into which the daemon log files are to be placed. */
 #define LOGFILE_DIR "logs"
@@ -64,5 +71,3 @@ void sf_status(char *msg);
  */
 
 void run_cli(FILE *in, FILE *out);
-
-#endif /* LEGION_H */

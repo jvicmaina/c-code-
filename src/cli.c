@@ -1,106 +1,277 @@
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
+#include <stdlib.h>
 #include <unistd.h>
-#include <sys/wait.h>
 #include <sys/types.h>
-#include <signal.h> // Include for signal handling
-#include "legion.h"
+#include <sys/wait.h>
+#include <signal.h>
+#include <errno.h>
 
-// Global variables for signal handling
-volatile sig_atomic_t sigchld_received = 0;
-volatile sig_atomic_t sigint_received = 0;
-volatile sig_atomic_t sigalrm_received = 0;
+#define MAX_DAEMONS 10
+#define MAX_NAME_LENGTH 50
+#define LOGFILE_DIR "/var/log/legion"
+#define LOG_VERSIONS 10
+#define SYNC_FD 3
+#define CHILD_TIMEOUT 5
 
-// Define sf_manual_mode as global variable
-int sf_manual_mode = 0;
+// Daemon status enumeration
+enum DaemonStatus {
+    UNKNOWN,
+    INACTIVE,
+    STARTING,
+    ACTIVE,
+    STOPPING,
+    EXITED,
+    CRASHED
+};
 
-// Function prototypes for signal handlers
-void sigchld_handler(int signum);
-void sigint_handler(int signum);
-void sigalrm_handler(int signum);
-void install_signal_handlers(void);
+// Daemon structure
+typedef struct {
+    char name[MAX_NAME_LENGTH];
+    pid_t pid;
+    enum DaemonStatus status;
+} Daemon;
 
-// Function implementations
+// Array to hold registered daemons
+Daemon daemons[MAX_DAEMONS];
 
-void sigchld_handler(int signum) {
-    sigchld_received = 1;
+// Function prototypes
+void sf_init(void);
+void sf_fini(void);
+void sf_register(char *daemon_name);
+void sf_unregister(char *daemon_name);
+void sf_start(char *daemon_name);
+void sf_active(char *daemon_name, pid_t pid);
+void sf_stop(char *daemon_name, pid_t pid);
+void sf_kill(char *daemon_name, pid_t pid);
+void sf_term(char *daemon_name, pid_t pid, int exit_status);
+void sf_crash(char *daemon_name, pid_t pid, int signal);
+void sf_reset(char *daemon_name);
+void sf_logrotate(char *daemon_name);
+void sf_error(char *reason);
+void sf_prompt(void);
+void sf_status(char *msg);
+
+// Function to find a free slot in the daemons array
+int find_free_slot() {
+    for (int i = 0; i < MAX_DAEMONS; i++) {
+        if (daemons[i].status == UNKNOWN) {
+            return i;
+        }
+    }
+    return -1; // No free slot available
 }
 
-void sigint_handler(int signum) {
-    sigint_received = 1;
+// Function to find a daemon by name
+Daemon* find_daemon_by_name(char *daemon_name) {
+    for (int i = 0; i < MAX_DAEMONS; i++) {
+        if (strcmp(daemons[i].name, daemon_name) == 0) {
+            return &daemons[i];
+        }
+    }
+    return NULL; // Daemon not found
 }
 
-void sigalrm_handler(int signum) {
-    sigalrm_received = 1;
+// Function to handle the 'help' command
+void help_command() {
+    printf("Available commands:\n");
+    printf("help (0 args) Print this help message\n");
+    printf("quit (0 args) Quit the program\n");
+    printf("register (0 args) Register a daemon\n");
+    printf("unregister (1 args) Unregister a daemon\n");
+    printf("status (1 args) Show the status of a daemon\n");
+    printf("status-all (0 args) Show the status of all daemons\n");
+    printf("start (1 args) Start a daemon\n");
+    printf("stop (1 args) Stop a daemon\n");
+    printf("logrotate (1 args) Rotate log files for a daemon\n");
 }
 
-void install_signal_handlers(void) {
-    struct sigaction sa;
+// Function to handle the 'quit' command
+void quit_command() {
+    // Clean up and exit
+    sf_fini();
+    exit(0);
+}
 
-    // Install SIGCHLD handler
-    sa.sa_handler = sigchld_handler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_RESTART;
-    if (sigaction(SIGCHLD, &sa, NULL) == -1) {
-        perror("sigaction(SIGCHLD) failed");
-        exit(EXIT_FAILURE);
+// Function to handle the 'register' command
+void register_command(char *daemon_name, char *executable) {
+    // Check if the daemon is already registered
+    Daemon *existing_daemon = find_daemon_by_name(daemon_name);
+    if (existing_daemon != NULL) {
+        sf_error("Daemon already registered");
+        return;
     }
 
-    // Install SIGINT handler
-    sa.sa_handler = sigint_handler;
-    if (sigaction(SIGINT, &sa, NULL) == -1) {
-        perror("sigaction(SIGINT) failed");
-        exit(EXIT_FAILURE);
+    // Find a free slot in the daemons array
+    int free_slot = find_free_slot();
+    if (free_slot == -1) {
+        sf_error("Cannot register more daemons");
+        return;
     }
 
-    // Install SIGALRM handler
-    sa.sa_handler = sigalrm_handler;
-    if (sigaction(SIGALRM, &sa, NULL) == -1) {
-        perror("sigaction(SIGALRM) failed");
-        exit(EXIT_FAILURE);
+    // Register the daemon
+    strncpy(daemons[free_slot].name, daemon_name, MAX_NAME_LENGTH - 1);
+    daemons[free_slot].pid = -1;
+    daemons[free_slot].status = INACTIVE;
+    sf_register(daemon_name);
+}
+
+// Function to handle the 'unregister' command
+void unregister_command(char *daemon_name) {
+    // Find the daemon
+    Daemon *daemon = find_daemon_by_name(daemon_name);
+    if (daemon == NULL) {
+        sf_error("Daemon not found");
+        return;
+    }
+
+    // Unregister the daemon
+    sf_unregister(daemon_name);
+    daemon->status = UNKNOWN;
+}
+
+// Function to handle the 'status' command
+void status_command(char *daemon_name) {
+    // Find the daemon
+    Daemon *daemon = find_daemon_by_name(daemon_name);
+    if (daemon == NULL) {
+        sf_error("Daemon not found");
+        return;
+    }
+
+    // Print the status
+    sf_status(daemon_name);
+}
+
+// Function to handle the 'status-all' command
+void status_all_command() {
+    // Print status for all daemons
+    for (int i = 0; i < MAX_DAEMONS; i++) {
+        if (daemons[i].status != UNKNOWN) {
+            sf_status(daemons[i].name);
+        }
     }
 }
 
-// Helper function to parse user input
-void parse_command(char *input, char *command, char **arguments, int *num_arguments) {
-    // TO BE IMPLEMENTED
+// Function to handle the 'start' command
+void start_command(char *daemon_name) {
+    // Find the daemon
+    Daemon *daemon = find_daemon_by_name(daemon_name);
+    if (daemon == NULL) {
+        sf_error("Daemon not found");
+        return;
+    }
+
+    // Check if the daemon is already active
+    if (daemon->status == ACTIVE) {
+        sf_error("Daemon already active");
+        return;
+    }
+
+    // Start the daemon
+    sf_start(daemon_name);
 }
 
-// Helper function to execute the command
-void execute_command(char *command, char **arguments, int num_arguments) {
-    // TO BE IMPLEMENTED
+// Function to handle the 'stop' command
+void stop_command(char *daemon_name) {
+    // Find the daemon
+    Daemon *daemon = find_daemon_by_name(daemon_name);
+    if (daemon == NULL) {
+        sf_error("Daemon not found");
+        return;
+    }
+
+    // Check if the daemon is already inactive
+    if (daemon->status == INACTIVE) {
+        sf_error("Daemon already inactive");
+        return;
+    }
+
+    // Stop the daemon
+    sf_stop(daemon_name, daemon->pid);
 }
 
-// Implementation of run_cli function
+// Function to execute the command
+void execute_command(char *command) {
+    // Parse command and execute corresponding action
+    char *token = strtok(command, " ");
+    if (token == NULL) {
+        printf("Unknown command: %s\n", command);
+        return;
+    }
+
+    if (strcmp(token, "help") == 0) {
+        help_command();
+    } else if (strcmp(token, "quit") == 0) {
+        quit_command();
+    } else if (strcmp(token, "register") == 0) {
+        char *daemon_name = strtok(NULL, " ");
+        char *executable = strtok(NULL, " ");
+        if (daemon_name == NULL || executable == NULL) {
+            printf("Invalid arguments for register command\n");
+            return;
+        }
+        register_command(daemon_name, executable);
+    } else if (strcmp(token, "unregister") == 0) {
+        char *daemon_name = strtok(NULL, " ");
+        if (daemon_name == NULL) {
+            printf("Invalid arguments for unregister command\n");
+            return;
+        }
+        unregister_command(daemon_name);
+    } else if (strcmp(token, "status") == 0) {
+        char *daemon_name = strtok(NULL, " ");
+        if (daemon_name == NULL) {
+            printf("Invalid arguments for status command\n");
+            return;
+        }
+        status_command(daemon_name);
+    } else if (strcmp(token, "status-all") == 0) {
+        status_all_command();
+    } else if (strcmp(token, "start") == 0) {
+        char *daemon_name = strtok(NULL, " ");
+        if (daemon_name == NULL) {
+            printf("Invalid arguments for start command\n");
+            return;
+        }
+        start_command(daemon_name);
+    } else if (strcmp(token, "stop") == 0) {
+        char *daemon_name = strtok(NULL, " ");
+        if (daemon_name == NULL) {
+            printf("Invalid arguments for stop command\n");
+            return;
+        }
+        stop_command(daemon_name);
+    } else {
+        printf("Unknown command: %s\n", command);
+    }
+}
+
 void run_cli(FILE *in, FILE *out) {
-    // Install signal handlers
-    install_signal_handlers();
+    char input[256];
 
-    char input[1024]; // Buffer to store user input
-    char command[128]; // Buffer to store the command
-    char *arguments[128]; // Array to store command arguments
-    int num_arguments = 0; // Number of command arguments
-
+    // Enter the main loop
     while (1) {
-        // Print prompt
+        // Display prompt
         fprintf(out, "legion> ");
         fflush(out);
 
         // Read user input
         if (fgets(input, sizeof(input), in) == NULL) {
-            fprintf(out, "\n");
-            break; // Exit on EOF
+            fprintf(out, "Error reading input\n");
+            continue;
         }
 
-        // Parse command and arguments
-        parse_command(input, command, arguments, &num_arguments);
+        // Remove newline character
+        input[strcspn(input, "\n")] = '\0';
 
-        // Execute command
-        execute_command(command, arguments, num_arguments);
+        // Parse input and execute command
+        execute_command(input);
 
-        // Reset arguments
-        num_arguments = 0;
+        // Check for exit command
+        if (strcmp(input, "quit") == 0) {
+            break;
+        }
     }
 }
+

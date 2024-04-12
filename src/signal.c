@@ -1,5 +1,5 @@
 #include "signals.h"
-#include "legion.h" // Include legion.h for sf_init() and sf_fini() declarations
+#include "legion.h"
 
 // Global variables for signal handling
 volatile sig_atomic_t sigint_flag = 0;

@@ -3,10 +3,11 @@
 
 #include <signal.h>
 
-// Function declarations
-void install_signal_handlers();
-void handle_signals();
+// Signal handler function declarations
+void sigint_handler(int signum);
+void sigchld_handler(int signum);
+void sigalrm_handler(int signum);
 
-// Define any constants or data structures related to signal handling
+// Other declarations...
 
 #endif /* SIGNALS_H */
