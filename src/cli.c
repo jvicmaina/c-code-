@@ -1,20 +1,39 @@
 #include <stdio.h>
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-#include <signal.h>
+#include <fcntl.h>
 #include <errno.h>
+#include <signal.h>
 
+// Declaration of empty environment variable array
+char *empty_env[] = {NULL};  
+
+#define SERVERS_DIR "/workspaces/hw4/daemons"
+#define CHILD_TIMEOUT 10 // Timeout duration in seconds
+#define MAX_INPUT_LENGTH 256
 #define MAX_DAEMONS 10
-#define MAX_NAME_LENGTH 50
-#define LOGFILE_DIR "/var/log/legion"
-#define LOG_VERSIONS 10
-#define SYNC_FD 3
-#define CHILD_TIMEOUT 5
+#define MAX_DAEMON_NAME_LENGTH 20
+#define MAX_EXECUTABLE_NAME_LENGTH 50
+#define SYNC_FD 3 // File descriptor for synchronization
 
-// Daemon status enumeration
+// Struct to represent a registered daemon
+typedef struct {
+    char name[MAX_DAEMON_NAME_LENGTH];
+    char executable[MAX_EXECUTABLE_NAME_LENGTH];
+    pid_t pid;
+    int status; // 0: inactive, 1: starting, 2: active, 3: stopping, 4: exited, 5: crashed
+} Daemon;
+
+// Array to store registered daemons
+Daemon registered_daemons[MAX_DAEMONS];
+int num_registered_daemons = 0;
+
+
+
+// Enum to represent daemon status
 enum DaemonStatus {
     UNKNOWN,
     INACTIVE,
@@ -25,282 +44,215 @@ enum DaemonStatus {
     CRASHED
 };
 
-// Daemon structure
-typedef struct {
-    char name[MAX_NAME_LENGTH];
-    pid_t pid;
-    enum DaemonStatus status;
-} Daemon;
-
-// Array to hold registered daemons
-Daemon daemons[MAX_DAEMONS];
-
-
-// Function to find a free slot in the daemons array
-int find_free_slot() {
-    for (int i = 0; i < MAX_DAEMONS; i++) {
-        if (daemons[i].status == UNKNOWN) {
-            return i;
-        }
-    }
-    return -1; // No free slot available
+// Function to print the help message
+void print_help(FILE *output_stream) {
+    fprintf(output_stream, "Available commands:\n");
+    fprintf(output_stream, "help (0 args) Print this help message\n");
+    fprintf(output_stream, "quit (0 args) Quit the program\n");
+    fprintf(output_stream, "register (0 args) Register a daemon\n");
+    fprintf(output_stream, "unregister (1 args) Unregister a daemon\n");
+    fprintf(output_stream, "status (1 args) Show the status of a daemon\n");
+    fprintf(output_stream, "status-all (0 args) Show the status of all daemons\n");
+    fprintf(output_stream, "start (1 args) Start a daemon\n");
+    fprintf(output_stream, "stop (1 args) Stop a daemon\n");
+    fprintf(output_stream, "logrotate (1 args) Rotate log files for a daemon\n");
 }
 
-// Function to find a daemon by name
-Daemon* find_daemon_by_name(char *daemon_name) {
-    for (int i = 0; i < MAX_DAEMONS; i++) {
-        if (strcmp(daemons[i].name, daemon_name) == 0) {
-            return &daemons[i];
-        }
-    }
-    return NULL; // Daemon not found
-}
-
-// Function to handle the 'help' command
-void help_command() {
-    printf("Available commands:\n");
-    printf("help (0 args) Print this help message\n");
-    printf("quit (0 args) Quit the program\n");
-    printf("register (0 args) Register a daemon\n");
-    printf("unregister (1 args) Unregister a daemon\n");
-    printf("status (1 args) Show the status of a daemon\n");
-    printf("status-all (0 args) Show the status of all daemons\n");
-    printf("start (1 args) Start a daemon\n");
-    printf("stop (1 args) Stop a daemon\n");
-    printf("logrotate (1 args) Rotate log files for a daemon\n");
-}
-
-// Function to handle the 'logrotate' command
-void logrotate_command(char *daemon_name) {
-    // Call the function to perform log rotation for the specified daemon
-    sf_logrotate(daemon_name);
-}
-
-// Function to execute the command
-void execute_command(char *command) {
-    // Parse command and execute corresponding action
-    char *token = strtok(command, " ");
-    if (token == NULL) {
-        printf("Unknown command: %s\n", command);
+// Function to register a daemon
+void register_daemon(const char *daemon_name, const char *executable_name, FILE *output_stream) {
+    // Check if maximum number of daemons already registered
+    if (num_registered_daemons >= MAX_DAEMONS) {
+        fprintf(output_stream, "Error: Maximum number of daemons registered\n");
         return;
     }
-
-    if (strcmp(token, "help") == 0) {
-        // Help command implementation
-    } else if (strcmp(token, "quit") == 0) {
-        // Quit command implementation
-    } else if (strcmp(token, "register") == 0) {
-        // Register command implementation
-    } else if (strcmp(token, "unregister") == 0) {
-        // Unregister command implementation
-    } else if (strcmp(token, "status") == 0) {
-        // Status command implementation
-    } else if (strcmp(token, "status-all") == 0) {
-        // Status-all command implementation
-    } else if (strcmp(token, "start") == 0) {
-        // Start command implementation
-    } else if (strcmp(token, "stop") == 0) {
-        // Stop command implementation
-    } else if (strcmp(token, "logrotate") == 0) {
-        // Logrotate command implementation
-        char *daemon_name = strtok(NULL, " ");
-        if (daemon_name == NULL) {
-            printf("Invalid arguments for logrotate command\n");
+    // Check if daemon name is already registered
+    for (int i = 0; i < num_registered_daemons; i++) {
+        if (strcmp(registered_daemons[i].name, daemon_name) == 0) {
+            fprintf(output_stream, "Error: Daemon '%s' is already registered\n", daemon_name);
             return;
         }
-        logrotate_command(daemon_name);
-    } else {
-        printf("Unknown command: %s\n", command);
     }
-}
-
-
-// Function to handle the 'quit' command
-void quit_command() {
-    // Clean up and exit
-    sf_fini();
-    exit(0);
-}
-
-// Function to handle the 'register' command
-void register_command(char *daemon_name, char *executable) {
-    // Check if the daemon is already registered
-    Daemon *existing_daemon = find_daemon_by_name(daemon_name);
-    if (existing_daemon != NULL) {
-        sf_error("Daemon already registered");
-        return;
-    }
-
-    // Find a free slot in the daemons array
-    int free_slot = find_free_slot();
-    if (free_slot == -1) {
-        sf_error("Cannot register more daemons");
-        return;
-    }
-
     // Register the daemon
-    strncpy(daemons[free_slot].name, daemon_name, MAX_NAME_LENGTH - 1);
-    daemons[free_slot].pid = -1;
-    daemons[free_slot].status = INACTIVE;
-    sf_register(daemon_name);
+    strcpy(registered_daemons[num_registered_daemons].name, daemon_name);
+    strcpy(registered_daemons[num_registered_daemons].executable, executable_name);
+    registered_daemons[num_registered_daemons].status = INACTIVE;
+    fprintf(output_stream, "Registered daemon '%s' with command '%s'\n", daemon_name, executable_name);
+    num_registered_daemons++;
 }
 
-// Function to handle the 'unregister' command
-void unregister_command(char *daemon_name) {
-    // Find the daemon
-    Daemon *daemon = find_daemon_by_name(daemon_name);
-    if (daemon == NULL) {
-        sf_error("Daemon not found");
-        return;
-    }
-
-    // Unregister the daemon
-    sf_unregister(daemon_name);
-    daemon->status = UNKNOWN;
-}
-
-// Function to handle the 'status' command
-void status_command(char *daemon_name) {
-    // Find the daemon
-    Daemon *daemon = find_daemon_by_name(daemon_name);
-    if (daemon == NULL) {
-        sf_error("Daemon not found");
-        return;
-    }
-
-    // Print the status
-    sf_status(daemon_name);
-}
-
-// Function to handle the 'status-all' command
-void status_all_command() {
-    // Print status for all daemons
-    for (int i = 0; i < MAX_DAEMONS; i++) {
-        if (daemons[i].status != UNKNOWN) {
-            sf_status(daemons[i].name);
-        }
-    }
-}
-
-// Function to handle the 'start' command
-void start_command(char *daemon_name) {
-    // Find the daemon
-    Daemon *daemon = find_daemon_by_name(daemon_name);
-    if (daemon == NULL) {
-        sf_error("Daemon not found");
-        return;
-    }
-
-    // Check if the daemon is already active
-    if (daemon->status == ACTIVE) {
-        sf_error("Daemon already active");
-        return;
-    }
-
-    // Start the daemon
-    sf_start(daemon_name);
-}
-
-// Function to handle the 'stop' command
-void stop_command(char *daemon_name) {
-    // Find the daemon
-    Daemon *daemon = find_daemon_by_name(daemon_name);
-    if (daemon == NULL) {
-        sf_error("Daemon not found");
-        return;
-    }
-
-    // Check if the daemon is already inactive
-    if (daemon->status == INACTIVE) {
-        sf_error("Daemon already inactive");
-        return;
-    }
-
-    // Stop the daemon
-    sf_stop(daemon_name, daemon->pid);
-}
-
-// Function to execute the command
-void execute_command(char *command) {
-    // Parse command and execute corresponding action
-    char *token = strtok(command, " ");
-    if (token == NULL) {
-        printf("Unknown command: %s\n", command);
-        return;
-    }
-
-    if (strcmp(token, "help") == 0) {
-        help_command();
-    } else if (strcmp(token, "quit") == 0) {
-        quit_command();
-    } else if (strcmp(token, "register") == 0) {
-        char *daemon_name = strtok(NULL, " ");
-        char *executable = strtok(NULL, " ");
-        if (daemon_name == NULL || executable == NULL) {
-            printf("Invalid arguments for register command\n");
+// Function to unregister a daemon
+void unregister_daemon(const char *daemon_name, FILE *output_stream) {
+    int i;
+    // Search for the daemon in the registered daemons array
+    for (i = 0; i < num_registered_daemons; i++) {
+        if (strcmp(registered_daemons[i].name, daemon_name) == 0) {
+            // Daemon found, remove it from the array
+            fprintf(output_stream, "Unregistered daemon '%s'\n", daemon_name);
+            for (; i < num_registered_daemons - 1; i++) {
+                registered_daemons[i] = registered_daemons[i + 1];
+            }
+            num_registered_daemons--;
             return;
         }
-        register_command(daemon_name, executable);
-    } else if (strcmp(token, "unregister") == 0) {
-        char *daemon_name = strtok(NULL, " ");
-        if (daemon_name == NULL) {
-            printf("Invalid arguments for unregister command\n");
-            return;
-        }
-        unregister_command(daemon_name);
-    } else if (strcmp(token, "status") == 0) {
-        char *daemon_name = strtok(NULL, " ");
-        if (daemon_name == NULL) {
-            printf("Invalid arguments for status command\n");
-            return;
-        }
-        status_command(daemon_name);
-    } else if (strcmp(token, "status-all") == 0) {
-        status_all_command();
-    } else if (strcmp(token, "start") == 0) {
-        char *daemon_name = strtok(NULL, " ");
-        if (daemon_name == NULL) {
-            printf("Invalid arguments for start command\n");
-            return;
-        }
-        start_command(daemon_name);
-    } else if (strcmp(token, "stop") == 0) {
-        char *daemon_name = strtok(NULL, " ");
-        if (daemon_name == NULL) {
-            printf("Invalid arguments for stop command\n");
-            return;
-        }
-        stop_command(daemon_name);
-    } else {
-        printf("Unknown command: %s\n", command);
     }
+    // Daemon not found, display an error message
+    fprintf(output_stream, "Error: Daemon '%s' is not registered\n", daemon_name);
 }
 
-void run_cli(FILE *in, FILE *out) {
-    char input[256];
-
-    // Enter the main loop
-    while (1) {
-        // Display prompt
-        fprintf(out, "legion> ");
-        fflush(out);
-
-        // Read user input
-        if (fgets(input, sizeof(input), in) == NULL) {
-            fprintf(out, "Error reading input\n");
-            continue;
+// Function to handle the status command
+void print_daemon_status(const char *daemon_name, FILE *output_stream) {
+    for (int i = 0; i < num_registered_daemons; i++) {
+        if (strcmp(registered_daemons[i].name, daemon_name) == 0) {
+            // Daemon found
+            switch (registered_daemons[i].status) {
+                case INACTIVE:
+                    fprintf(output_stream, "%s\t0\tinactive\n", daemon_name);
+                    break;
+                case STARTING:
+                case ACTIVE:
+                case STOPPING:
+                    fprintf(output_stream, "%s\t%d\t%s\n", daemon_name, registered_daemons[i].pid,
+                            registered_daemons[i].status == STARTING ? "starting" :
+                            registered_daemons[i].status == ACTIVE ? "active" : "stopping");
+                    break;
+                case EXITED:
+                    fprintf(output_stream, "%s\t%d\texited\n", daemon_name, registered_daemons[i].pid);
+                    break;
+                case CRASHED:
+                    fprintf(output_stream, "%s\t%d\tcrashed\n", daemon_name, registered_daemons[i].pid);
+                    break;
+                default:
+                    fprintf(output_stream, "%s\t0\tunknown\n", daemon_name);
+            }
+            return;
         }
+    }
+    // Daemon not found
+    fprintf(output_stream, "%s\t0\tunknown\n", daemon_name);
+}
 
-        // Remove newline character
-        input[strcspn(input, "\n")] = '\0';
-
-        // Parse input and execute command
-        execute_command(input);
-
-        // Check for exit command
-        if (strcmp(input, "quit") == 0) {
+// Function to start a daemon
+void start_daemon(const char *daemon_name, FILE *output_stream) {
+    // Step 1: Verify if the daemon is registered
+    int daemon_index = -1;
+    for (int i = 0; i < num_registered_daemons; i++) {
+        if (strcmp(registered_daemons[i].name, daemon_name) == 0) {
+            daemon_index = i;
             break;
         }
     }
+
+    if (daemon_index == -1) {
+        fprintf(output_stream, "Error: Daemon '%s' is not registered\n", daemon_name);
+        return;
+    }
+
+    // Step 2: Check if the daemon is inactive
+    if (registered_daemons[daemon_index].status != INACTIVE) {
+        fprintf(output_stream, "Error: Daemon '%s' is not inactive\n", daemon_name);
+        return;
+    }
+
+    // Step 3: Set the status of the daemon to starting
+    registered_daemons[daemon_index].status = STARTING;
+
+    // Step 4: Fork a child process
+    pid_t pid = fork();
+    if (pid < 0) {
+        // Fork failed
+        perror("Fork failed");
+        registered_daemons[daemon_index].status = INACTIVE; // Reset status
+        return;
+    } else if (pid == 0) {
+        // Child process
+        // Proceed with the remaining steps for the child process
+    } else {
+        // Parent process
+        // Proceed with the remaining steps for the parent process
+    }
+
+// Step 6: Redirect standard output of the child process to the appropriate log file
+        char log_file_name[50]; // Assuming maximum length of log file name is 50 characters
+        sprintf(log_file_name, "%s.log", registered_daemons[daemon_index].name); // Create log file name
+        FILE *log_file = fopen(log_file_name, "a"); // Open log file in append mode
+        if (log_file == NULL) {
+            perror("Failed to open log file");
+            exit(EXIT_FAILURE); // Exit child process
+        }
+        dup2(fileno(log_file), STDOUT_FILENO); // Redirect stdout to log file
+        fclose(log_file); // Close the file stream after redirection   
+
+// Step 7: Execute the command registered for the daemon using execvpe()
+        char *argv[] = {registered_daemons[daemon_index].executable, NULL}; // Command and arguments
+        execvpe(argv[0], argv, empty_env); // Execute command
+        // If execvpe() returns, it failed to execute the command
+        perror("Exec failed");
+        exit(EXIT_FAILURE);  
 }
+
+
+// Function to handle command-line interface
+void run_cli(FILE *input_stream, FILE *output_stream) {
+    char input[MAX_INPUT_LENGTH];
+    char *token;
+    while (1) {
+        fprintf(output_stream, "legion> ");
+        if (fgets(input, sizeof(input), input_stream) == NULL) {
+            fprintf(output_stream, "\n");
+            break;
+        }
+        // Tokenize input and process command
+        token = strtok(input, " \n");
+        if (token != NULL) {
+            // Compare the command token with known commands
+            if (strcmp(token, "help") == 0) {
+                print_help(output_stream);
+            } else if (strcmp(token, "quit") == 0) {
+                fprintf(output_stream, "Exiting program...\n");
+                break; // Exit the loop and the function
+            } else if (strcmp(token, "register") == 0) {
+                // Handle register command
+                char *daemon_name = strtok(NULL, " \n");
+                char *executable_name = strtok(NULL, " \n");
+                if (daemon_name != NULL && executable_name != NULL) {
+                    register_daemon(daemon_name, executable_name, output_stream);
+                } else {
+                    fprintf(output_stream, "Usage: register <daemon_name> <executable_name>\n");
+                }
+            } else if (strcmp(token, "unregister") == 0) {
+                // Handle unregister command
+                char *daemon_name = strtok(NULL, " \n");
+                if (daemon_name != NULL) {
+                    unregister_daemon(daemon_name, output_stream);
+                } else {
+                    fprintf(output_stream, "Usage: unregister <daemon_name>\n");
+                }
+            } else if (strcmp(token, "status") == 0) {
+                // Handle status command
+                char *daemon_name = strtok(NULL, " \n");
+                if (daemon_name != NULL) {
+                    print_daemon_status(daemon_name, output_stream);
+                } else {
+                    fprintf(output_stream, "Usage: status <daemon_name>\n");
+                }
+            } else if (strcmp(token, "status-all") == 0) {
+                // Handle status-all command
+                for (int i = 0; i < num_registered_daemons; i++) {
+                    print_daemon_status(registered_daemons[i].name, output_stream);
+                }
+            } else if (strcmp(token, "start") == 0) {
+                // Handle start command
+                char *daemon_name = strtok(NULL, " \n");
+                if (daemon_name != NULL) {
+                    start_daemon(daemon_name, output_stream);
+                } else {
+                    fprintf(output_stream, "Usage: start <daemon_name>\n");
+                }
+            } else {
+                fprintf(output_stream, "Unknown command: %s\n", token);
+            }
+        }
+    }
+}
+
 
