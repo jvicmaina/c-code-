@@ -7,9 +7,19 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <signal.h>
+#include <sys/stat.h>
+#include <dirent.h>
+
+//for logrotate
+#define LOGFILE_DIR "/workspaces/hw4/logs"
+#define LOG_VERSIONS 10
+
 
 // Declaration of empty environment variable array
 char *empty_env[] = {NULL};  
+
+
+
 
 #define SERVERS_DIR "/workspaces/hw4/daemons"
 #define CHILD_TIMEOUT 10 // Timeout duration in seconds
@@ -18,6 +28,8 @@ char *empty_env[] = {NULL};
 #define MAX_DAEMON_NAME_LENGTH 20
 #define MAX_EXECUTABLE_NAME_LENGTH 50
 #define SYNC_FD 3 // File descriptor for synchronization
+sigset_t empty_mask;
+
 
 // Struct to represent a registered daemon
 typedef struct {
@@ -171,7 +183,7 @@ void start_daemon(const char *daemon_name, FILE *output_stream) {
         // Proceed with the remaining steps for the parent process
     }
 
-// Step 6: Redirect standard output of the child process to the appropriate log file
+    // Step 6: Redirect standard output of the child process to the appropriate log file
         char log_file_name[50]; // Assuming maximum length of log file name is 50 characters
         sprintf(log_file_name, "%s.log", registered_daemons[daemon_index].name); // Create log file name
         FILE *log_file = fopen(log_file_name, "a"); // Open log file in append mode
@@ -182,13 +194,59 @@ void start_daemon(const char *daemon_name, FILE *output_stream) {
         dup2(fileno(log_file), STDOUT_FILENO); // Redirect stdout to log file
         fclose(log_file); // Close the file stream after redirection   
 
-// Step 7: Execute the command registered for the daemon using execvpe()
+    // Step 7: Execute the command registered for the daemon using execvpe()
         char *argv[] = {registered_daemons[daemon_index].executable, NULL}; // Command and arguments
         execvpe(argv[0], argv, empty_env); // Execute command
         // If execvpe() returns, it failed to execute the command
         perror("Exec failed");
         exit(EXIT_FAILURE);  
 }
+//sigemptyset(&empty_mask);
+// Function to stop a daemon
+void stop_daemon(const char *daemon_name, FILE *output_stream) {
+    // Step 1: Find the daemon index
+    int daemon_index = -1;
+    for (int i = 0; i < num_registered_daemons; i++) {
+        if (strcmp(registered_daemons[i].name, daemon_name) == 0) {
+            daemon_index = i;
+            break;
+        }
+    }
+
+    // Step 2: Check if the daemon is registered
+    if (daemon_index == -1) {
+        fprintf(output_stream, "Error: Daemon '%s' is not registered\n", daemon_name);
+        return;
+    }
+
+    // Step 3: Check if the daemon is already inactive
+    if (registered_daemons[daemon_index].status == INACTIVE) {
+        fprintf(output_stream, "Error: Daemon '%s' is already inactive\n", daemon_name);
+        return;
+    }
+
+    // Step 4: Attempt to stop the daemon
+    if (registered_daemons[daemon_index].status == EXITED || registered_daemons[daemon_index].status == CRASHED) {
+        // If the daemon has exited or crashed, set it to inactive
+        registered_daemons[daemon_index].status = INACTIVE;
+        fprintf(output_stream, "Daemon '%s' is now inactive\n", daemon_name);
+    } else if (registered_daemons[daemon_index].status == ACTIVE) {
+        // If the daemon is active, attempt to stop it
+        registered_daemons[daemon_index].status = STOPPING;
+        kill(registered_daemons[daemon_index].pid, SIGTERM); // Send SIGTERM to the daemon process
+
+        // Pause and wait for SIGCHLD signal indicating daemon termination
+        while (1) {
+            sigsuspend(&empty_mask);
+            if (registered_daemons[daemon_index].status == EXITED || registered_daemons[daemon_index].status == CRASHED) {
+                // Daemon has terminated
+                fprintf(output_stream, "Daemon '%s' has terminated\n", daemon_name);
+                break;
+            }
+        }
+    }
+}
+
 
 
 // Function to handle command-line interface
